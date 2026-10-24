@@ -21,6 +21,7 @@ Hex-Stratego kombiniert die taktische Tiefe und die verborgenen Informationen de
   - **Wahrscheinlichkeits-Inferenz**: Schätzt Identitäten gegnerischer Einheiten basierend auf Zugverhalten, Verharren (Minen/Flagge), Bluff-Erkennung und Entropie.
   - **Permanentes Pondering**: Die KI analysiert Stellung, Drohungen und Zugprognosen bereits während der Spieler überlegt.
   - **Schwierigkeitsstufen**: Normal, Stark und Ultra (mit Quiescence-Search und Transpositionstabellen).
+  - ⚠️ *Hinweis zu „Ultra“*: Im stärksten Modus lastet die KI über Web Worker alle verfügbaren CPU-Kerne (bis zu 8 Threads) permanent aus. Trotz des hohen Rechenaufwands ist die KI aufgrund des extremen Zustandsraums bei unvollständiger Information nicht übermäßig spielstark – Vorsicht vor hoher System- und Lüfterlast!
 - 🎮 **Zwei Spielmodi**:
   - **Klassisch**: Volle Schlachtordnung mit allen 12 Diensträngen und taktischer Aufstellungsphase (Drag & Drop oder Zufallsaufstellung).
   - **Spähtrupp-Karriere (Scouts Only)**: Starte nur mit Aufklärern, Flagge und Bomben – Einheiten sammeln XP durch Siege und steigen in der Ranghierarchie auf!
