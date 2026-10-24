@@ -111,6 +111,7 @@ interface IncrementalPonderSession {
   worldIdx: number;
   candExpectedScore: number;
   candWorstScore: number;
+  initialStaticScore: number;
   bestMoveAtCurrentDepth: { unit: Unit; toQ: number; toR: number; score: number } | null;
   bestScoreAtCurrentDepth: number;
   committedBestMove: { unit: Unit; toQ: number; toR: number; score: number } | null;
@@ -342,14 +343,18 @@ export class StrategoAIEngine {
         }
       }
       rootMoves.sort((a, b) => b.baseScore - a.baseScore);
-      rootMoves = rootMoves.slice(0, 12);
+      const viableMoves = rootMoves.filter(m => m.baseScore > -8000);
+      rootMoves = (viableMoves.length > 0 ? viableMoves : rootMoves).slice(0, 18);
     } else {
       const orderedPlayerMoves = this.generateOrderedWorldMoves(
         worlds[0],
         'player',
         tiles,
         false,
-        12
+        16,
+        undefined,
+        1,
+        analysis
       );
       for (const pm of orderedPlayerMoves) {
         rootMoves.push({
@@ -548,32 +553,52 @@ export class StrategoAIEngine {
           const aiRank = UNIT_DEFINITIONS[aiNeighbor.type].rank;
           if (aiNeighbor.type === 'marshal') {
             // Stepping next to a revealed Marshal without attacking immediately: strong Spy or Marshal suspicion!
-            susp.spySuspicion = Math.min(1, susp.spySuspicion + 0.62);
+            susp.spySuspicion = Math.min(1, susp.spySuspicion + 0.72);
           } else if (aiNeighbor.type === 'bomb') {
             // Stepping right next to a revealed Bomb -> very likely a Miner (Rank 3)!
-            susp.minerSuspicion = Math.min(1, susp.minerSuspicion + 0.72);
-          } else if (aiRank >= 5 && aiRank <= 9) {
-            // Player stepped right up to our revealed officer -> likely higher rank (or a calculated bluff)!
-            susp.minLikelyRank = Math.max(susp.minLikelyRank, aiRank);
+            susp.minerSuspicion = Math.min(1, susp.minerSuspicion + 0.78);
+          } else if (aiRank >= 4 && aiRank <= 9) {
+            // Player stepped right up to our revealed officer -> almost certainly beats it (rank + 1) or equals it!
+            susp.minLikelyRank = Math.max(susp.minLikelyRank, Math.min(10, aiRank + 1));
             susp.approachedHighRank = true;
             if (aiRank >= 8 && !unit.revealed) {
-              susp.spySuspicion = Math.min(1, susp.spySuspicion + 0.25);
+              susp.spySuspicion = Math.min(1, susp.spySuspicion + 0.32);
             }
           }
         } else if (!aiNeighbor.hasMovedEver && aiNeighbor.r <= -3) {
           // Player marched up to an unmoved AI backrow piece (potential Bomb/Flag) -> likely Miner or Prober!
           susp.targetedUnmovedBackrow = true;
-          susp.minerSuspicion = Math.min(1, susp.minerSuspicion + 0.45);
+          susp.minerSuspicion = Math.min(1, susp.minerSuspicion + 0.50);
         }
       }
 
-      // 3. Check if the player is shadowing our Marshal at distance 2 (classic Spy stalking pattern)
-      const aiMarshal = allUnits.find(u => u.faction === 'ai' && u.type === 'marshal' && u.revealed);
-      if (aiMarshal) {
-        const dBefore = hexDistance({ q: fromQ, r: fromR }, { q: aiMarshal.q, r: aiMarshal.r });
-        const dAfter = hexDistance({ q: toQ, r: toR }, { q: aiMarshal.q, r: aiMarshal.r });
-        if (dAfter === 2 && dBefore >= 2) {
-          susp.spySuspicion = Math.min(1, susp.spySuspicion + 0.3);
+      // 3. Check if the player is actively approaching any revealed high-rank AI officer (Marshal/General/Colonel) from distance 2-3
+      for (const au of allUnits) {
+        if (au.faction !== 'ai' || !au.revealed) continue;
+        const aiRank = UNIT_DEFINITIONS[au.type].rank;
+        if (aiRank < 7 || aiRank > 10) continue;
+        const dBefore = hexDistance({ q: fromQ, r: fromR }, { q: au.q, r: au.r });
+        const dAfter = hexDistance({ q: toQ, r: toR }, { q: au.q, r: au.r });
+        if (dAfter < dBefore && dAfter <= 2) {
+          if (au.type === 'marshal') {
+            susp.spySuspicion = Math.min(1, susp.spySuspicion + 0.35);
+            susp.approachedHighRank = true;
+          } else {
+            susp.minLikelyRank = Math.max(susp.minLikelyRank, aiRank);
+            susp.approachedHighRank = true;
+          }
+        }
+      }
+
+      // 4. Check if the player is shadowing an own revealed high-rank officer (classic Spy-escorting-General/Colonel bait!)
+      for (const pu of allUnits) {
+        if (pu.faction !== 'player' || pu.id === unit.id || !pu.revealed) continue;
+        const puRank = UNIT_DEFINITIONS[pu.type].rank;
+        if (puRank >= 7 && puRank <= 9) {
+          const dAfter = hexDistance({ q: toQ, r: toR }, { q: pu.q, r: pu.r });
+          if (dAfter === 1) {
+            susp.spySuspicion = Math.min(1, susp.spySuspicion + 0.42);
+          }
         }
       }
     }
@@ -1247,6 +1272,25 @@ export class StrategoAIEngine {
       weights.bomb = bombW;
     }
 
+    // Check tactical context around `target` (adjacent revealed AI units or adjacent revealed Player officers)
+    const targetNeighbors = getNeighbors(target.q, target.r);
+    let maxAdjRevealedAiRank = 0;
+    let adjToRevealedAiMarshal = false;
+    let adjToRevealedPlayerHighOfficer = false;
+
+    for (const tn of targetNeighbors) {
+      const nu = allUnits.find(u => u.q === tn.q && u.r === tn.r);
+      if (!nu) continue;
+      if (nu.faction === 'ai' && nu.revealed) {
+        const r = UNIT_DEFINITIONS[nu.type].rank;
+        if (nu.type === 'marshal') adjToRevealedAiMarshal = true;
+        else if (r >= 4 && r <= 9 && r > maxAdjRevealedAiRank) maxAdjRevealedAiRank = r;
+      } else if (nu.faction === 'player' && nu.revealed) {
+        const r = UNIT_DEFINITIONS[nu.type].rank;
+        if (r >= 7 && r <= 9) adjToRevealedPlayerHighOfficer = true;
+      }
+    }
+
     // 2. Movable unit likelihoods
     for (const t of ORDERED_UNIT_TYPES) {
       if (t === 'flag' || t === 'bomb') continue;
@@ -1261,23 +1305,39 @@ export class StrategoAIEngine {
 
       if (susp) {
         if (rank < susp.minLikelyRank && t !== 'spy') {
-          w *= 0.18;
+          w *= 0.15;
         }
         if (rank > susp.maxLikelyRank) {
-          w *= 0.18;
+          w *= 0.15;
         }
         if (t === 'spy' && susp.spySuspicion > 0) {
-          w *= 1 + susp.spySuspicion * 4.5;
+          w *= 1 + susp.spySuspicion * 5.2;
         }
         if (t === 'miner' && susp.minerSuspicion > 0) {
-          w *= 1 + susp.minerSuspicion * 3.8;
+          w *= 1 + susp.minerSuspicion * 4.0;
         }
         if (susp.approachedHighRank && rank >= 7) {
-          w *= 1.85;
+          w *= 2.1;
         }
         if (susp.targetedUnmovedBackrow && (t === 'miner' || t === 'scout' || t === 'sergeant')) {
-          w *= 1.75;
+          w *= 1.85;
         }
+      }
+
+      // Human behavioral context: standing next to a revealed AI officer or escorting a revealed Player General/Colonel
+      if (target.hasMovedEver) {
+        if (adjToRevealedAiMarshal) {
+          if (t === 'spy') w *= 3.6;
+          else if (t === 'marshal') w *= 1.8;
+          else w *= 0.35;
+        } else if (maxAdjRevealedAiRank >= 4) {
+          if (rank > maxAdjRevealedAiRank) w *= 2.45;
+          else if (rank === maxAdjRevealedAiRank) w *= 1.25;
+          else if (t !== 'spy') w *= 0.28;
+        }
+      }
+      if (adjToRevealedPlayerHighOfficer && t === 'spy') {
+        w *= 2.65;
       }
 
       if (!target.hasMovedEver) {
@@ -1569,6 +1629,7 @@ export class StrategoAIEngine {
         }
 
         let probBeatsMe = 0;
+        let probEqualsMe = 0;
         for (const t of ORDERED_UNIT_TYPES) {
           if (t === 'flag' || t === 'bomb') continue;
           const p = belief.pByType[t];
@@ -1578,14 +1639,34 @@ export class StrategoAIEngine {
             probBeatsMe += p;
           } else if (r > myDef.rank) {
             probBeatsMe += p;
+          } else if (r === myDef.rank) {
+            probEqualsMe += p;
           }
         }
 
-        const multiplier = willBeRevealed ? 0.94 : 0.48;
-        let risk = probBeatsMe * myVal * multiplier;
+        const puSusp = this.suspicions.get(pu.id);
+        // If our AI unit is ALREADY revealed and an unrevealed moved player unit is right next to it,
+        // a human player rarely leaves a weaker piece adjacent to a known AI officer—calibrate for human hunting intent!
+        if (aiUnit.revealed && pu.hasMovedEver && myDef.rank >= 5) {
+          const intentFloor = puSusp?.approachedHighRank ? 0.74 : 0.56;
+          if (probBeatsMe > 0.04) {
+            probBeatsMe = Math.min(0.92, Math.max(probBeatsMe * 1.55, intentFloor));
+          }
+        }
 
+        const multiplier = willBeRevealed ? 0.95 : 0.52;
+        let risk = (probBeatsMe + probEqualsMe * 0.25) * myVal * multiplier;
+
+        // Anti-Spy-Bait Protection for AI Marshal (10):
+        // Humans love baiting the AI Marshal with a revealed General (9) / Colonel (8) / Major (7) that has an unrevealed Spy (1) right next to it!
         if (aiUnit.type === 'marshal' && willBeRevealed && analysis.playerSpyAlive && !analysis.playerSpyRevealed) {
-          risk += belief.pByType.spy * myVal * 0.65;
+          const spyProb = belief.pByType.spy;
+          const suspSpy = puSusp?.spySuspicion ?? 0;
+          let spyTrapDanger = spyProb * myVal * 1.35;
+          if (pu.hasMovedEver && (spyProb >= 0.12 || suspSpy >= 0.2)) {
+            spyTrapDanger = Math.max(spyTrapDanger, myVal * Math.min(0.85, 0.38 + spyProb * 1.6 + suspSpy * 0.45));
+          }
+          risk = Math.max(risk, spyTrapDanger);
         }
 
         maxRisk = Math.max(maxRisk, risk);
@@ -1786,7 +1867,8 @@ export class StrategoAIEngine {
           }
         }
         rootMoves.sort((a, b) => b.baseScore - a.baseScore);
-        rootMoves = rootMoves.slice(0, 12);
+        const viableMoves = rootMoves.filter(m => m.baseScore > -8000);
+        rootMoves = (viableMoves.length > 0 ? viableMoves : rootMoves).slice(0, 18);
       } else {
         // Player is to move (or in setup): generate the player's strongest candidate moves to ponder against!
         const orderedPlayerMoves = this.generateOrderedWorldMoves(
@@ -1794,7 +1876,10 @@ export class StrategoAIEngine {
           'player',
           tiles,
           false,
-          12
+          16,
+          undefined,
+          1,
+          analysis
         );
         for (const pm of orderedPlayerMoves) {
           const realUnit = units.find(u => u.id === pm.unitId);
@@ -1831,6 +1916,7 @@ export class StrategoAIEngine {
         worldIdx: 0,
         candExpectedScore: 0,
         candWorstScore: sideToMove === 'ai' ? Infinity : -Infinity,
+        initialStaticScore,
         bestMoveAtCurrentDepth: rootMoves[0]
           ? { unit: rootMoves[0].unit, toQ: rootMoves[0].toQ, toR: rootMoves[0].toR, score: initialStaticScore }
           : null,
@@ -1933,20 +2019,23 @@ export class StrategoAIEngine {
       // Finished all Bayesian worlds for this root candidate move?
       if (s.worldIdx >= s.worlds.length) {
         if (s.sideToMove === 'ai') {
-          const regretAdjusted = 0.72 * s.candExpectedScore + 0.28 * s.candWorstScore;
-          const combined = cand.baseScore * 0.48 + regretAdjusted * 0.52;
+          const expectedDelta = s.candExpectedScore - s.initialStaticScore;
+          const worstDelta = s.candWorstScore - s.initialStaticScore;
+          const regretAdjustedDelta = 0.68 * expectedDelta + 0.32 * worstDelta;
+          const treeWeight = worstDelta < -220 || regretAdjustedDelta < -140 ? 0.80 : 0.64;
+          const combined = cand.baseScore * (1 - treeWeight) + regretAdjustedDelta * treeWeight;
           if (combined > s.bestScoreAtCurrentDepth) {
             s.bestScoreAtCurrentDepth = combined;
             s.bestMoveAtCurrentDepth = {
               unit: cand.unit,
               toQ: cand.toQ,
               toR: cand.toR,
-              score: combined
+              score: s.initialStaticScore + regretAdjustedDelta
             };
           }
         } else {
           // Player minimizes AI score
-          const playerScore = 0.75 * s.candExpectedScore + 0.25 * s.candWorstScore;
+          const playerScore = 0.72 * s.candExpectedScore + 0.28 * s.candWorstScore;
           if (playerScore < s.bestScoreAtCurrentDepth) {
             s.bestScoreAtCurrentDepth = playerScore;
             s.bestMoveAtCurrentDepth = {
@@ -1970,7 +2059,7 @@ export class StrategoAIEngine {
           s.completedDepth = totalPlyHorizon;
           if (s.bestMoveAtCurrentDepth) {
             s.committedBestMove = { ...s.bestMoveAtCurrentDepth };
-            s.committedBestScore = s.bestScoreAtCurrentDepth;
+            s.committedBestScore = s.bestMoveAtCurrentDepth.score;
 
             // Re-order rootMoves so the best move from depth D is searched first at depth D+1 (PV ordering!)
             const bestId = s.committedBestMove.unit.id;
@@ -2407,9 +2496,10 @@ export class StrategoAIEngine {
           'ai',
           tiles,
           true,
-          5,
+          8,
           ttEntry,
-          ply
+          ply,
+          rootAnalysis
         );
         for (const tm of tacticalMoves) {
           const res = this.applyMoveInWorld(worldUnits, tm.unitId, tm.toQ, tm.toR, tiles, gameMode);
@@ -2444,9 +2534,10 @@ export class StrategoAIEngine {
           'player',
           tiles,
           true,
-          5,
+          8,
           ttEntry,
-          ply
+          ply,
+          rootAnalysis
         );
         for (const tm of tacticalMoves) {
           const res = this.applyMoveInWorld(worldUnits, tm.unitId, tm.toQ, tm.toR, tiles, gameMode);
@@ -2475,7 +2566,7 @@ export class StrategoAIEngine {
       }
     }
 
-    const maxBranch = depth >= 4 ? 8 : depth === 3 ? 7 : 6;
+    const maxBranch = depth >= 4 ? 12 : depth === 3 ? 10 : 9;
     const moves = this.generateOrderedWorldMoves(
       worldUnits,
       sideToMove,
@@ -2483,7 +2574,8 @@ export class StrategoAIEngine {
       false,
       maxBranch,
       ttEntry,
-      ply
+      ply,
+      rootAnalysis
     );
 
     if (moves.length === 0) {
@@ -2649,7 +2741,8 @@ export class StrategoAIEngine {
     capturesOnly: boolean,
     limit: number,
     ttEntry?: TTEntry,
-    ply = 1
+    ply = 1,
+    rootAnalysis?: BoardAnalysis
   ): { unitId: string; toQ: number; toR: number; orderScore: number }[] {
     const unitAtCoord = new Map<string, Unit>();
     let enemyFlag: Unit | null = null;
@@ -2693,32 +2786,97 @@ export class StrategoAIEngine {
               const occDef = UNIT_DEFINITIONS[occ.type];
               let orderScore = (isTTBest ? 100000 : 0) + killerBonus + historyBonus;
 
-              if (occ.type === 'flag') {
-                orderScore += 20000;
-              } else if (occ.type === 'bomb') {
-                if (u.type === 'miner') {
-                  orderScore += 2400;
+              if (occ.revealed) {
+                // Target unit identity is public information to both sides
+                if (occ.type === 'flag') {
+                  orderScore += 20000;
+                } else if (occ.type === 'bomb') {
+                  if (u.type === 'miner') {
+                    orderScore += 2600;
+                  } else {
+                    break;
+                  }
+                } else if (u.type === 'spy' && occ.type === 'marshal') {
+                  orderScore += 4500;
+                } else if (def.rank > occDef.rank) {
+                  orderScore += 1600 + occDef.rank * 135 - def.rank * 12;
+                  if (myFlag && hexDistance({ q: tq, r: tr }, { q: myFlag.q, r: myFlag.r }) <= 2) {
+                    orderScore += 1900;
+                  }
+                } else if (def.rank === occDef.rank) {
+                  orderScore += 550 + occDef.rank * 45;
                 } else {
                   break;
                 }
-              } else if (u.type === 'spy' && occ.type === 'marshal') {
-                orderScore += 4200;
-              } else if (def.rank > occDef.rank) {
-                orderScore += 1500 + occDef.rank * 130 - def.rank * 12;
-                if (myFlag && hexDistance({ q: tq, r: tr }, { q: myFlag.q, r: myFlag.r }) <= 2) {
-                  orderScore += 1800;
+                scoredMoves.push({ unitId: u.id, toQ: tq, toR: tr, orderScore });
+              } else if (faction === 'ai' && rootAnalysis) {
+                // Imperfect-Information AI Move Ordering:
+                // Use Bayesian `rootAnalysis.beliefMap` rather than peeking at `occ.type` in the determinized world!
+                // This prevents Strategy Fusion (where AI delays decisions at the root expecting to peek at cards at ply 3).
+                const belief = rootAnalysis.beliefMap.get(occ.id);
+                if (belief) {
+                  if (u.type === 'miner' && !occ.hasMovedEver) {
+                    orderScore += 1500 + belief.pBomb * 1400 + belief.pFlag * 5000;
+                    scoredMoves.push({ unitId: u.id, toQ: tq, toR: tr, orderScore });
+                  } else if (u.type === 'spy') {
+                    if (belief.pByType.marshal >= 0.30) {
+                      orderScore += 2200 * belief.pByType.marshal;
+                      scoredMoves.push({ unitId: u.id, toQ: tq, toR: tr, orderScore });
+                    }
+                  } else {
+                    let pWin = belief.pFlag;
+                    let pEqual = 0;
+                    let pLose = belief.pBomb;
+                    for (const t of ORDERED_UNIT_TYPES) {
+                      if (t === 'flag' || t === 'bomb') continue;
+                      const p = belief.pByType[t];
+                      if (p <= 0) continue;
+                      const r = UNIT_DEFINITIONS[t].rank;
+                      if (def.rank > r) pWin += p;
+                      else if (def.rank === r) pEqual += p;
+                      else pLose += p;
+                    }
+                    if (pWin >= 0.42 || (!capturesOnly && def.rank <= 4 && belief.pBomb < 0.35)) {
+                      orderScore += pWin * 1650 + pEqual * 450 - pLose * def.rank * 95 + belief.pFlag * 4500;
+                      if (myFlag && hexDistance({ q: tq, r: tr }, { q: myFlag.q, r: myFlag.r }) <= 2) {
+                        orderScore += 1800;
+                      }
+                      scoredMoves.push({ unitId: u.id, toQ: tq, toR: tr, orderScore });
+                    }
+                  }
+                } else {
+                  orderScore += 600;
+                  scoredMoves.push({ unitId: u.id, toQ: tq, toR: tr, orderScore });
                 }
-              } else if (def.rank === occDef.rank) {
-                orderScore += 500 + occDef.rank * 40;
               } else {
-                if (!capturesOnly && !occ.revealed && def.rank <= 3) {
-                  orderScore += 80 - def.rank * 20;
+                // Simulated Player attacking an UNREVEALED AI unit (`!occ.revealed`):
+                // The human player does NOT know `occ.type`! They only see `occ.hasMovedEver` and `occ.r`.
+                if (occ.hasMovedEver) {
+                  // Movable unrevealed AI piece: Player officers (rank >= 5) and probers (Scout/Sergeant/Miner) will attack/probe it!
+                  if (def.rank >= 5) {
+                    orderScore += 1150 + def.rank * 65;
+                    if (myFlag && hexDistance({ q: tq, r: tr }, { q: myFlag.q, r: myFlag.r }) <= 2) {
+                      orderScore += 1600;
+                    }
+                    scoredMoves.push({ unitId: u.id, toQ: tq, toR: tr, orderScore });
+                  } else if (def.rank >= 2 && (!capturesOnly || step > 1 || def.rank <= 4)) {
+                    orderScore += 620 + (step > 1 ? 220 : 0);
+                    scoredMoves.push({ unitId: u.id, toQ: tq, toR: tr, orderScore });
+                  }
                 } else {
-                  break;
+                  // Unmoved AI backrow piece (could be Bomb, Flag, or reserve): Player Miners and Scouts/Probers will test it!
+                  if (u.type === 'miner') {
+                    orderScore += 1650 + (occ.r <= -3 ? 450 : 0);
+                    scoredMoves.push({ unitId: u.id, toQ: tq, toR: tr, orderScore });
+                  } else if (def.rank <= 4 && u.type !== 'spy') {
+                    orderScore += 580 + (occ.r <= -4 ? 320 : 0);
+                    scoredMoves.push({ unitId: u.id, toQ: tq, toR: tr, orderScore });
+                  } else if (def.rank >= 6 && occ.r >= -2) {
+                    orderScore += 680;
+                    scoredMoves.push({ unitId: u.id, toQ: tq, toR: tr, orderScore });
+                  }
                 }
               }
-
-              scoredMoves.push({ unitId: u.id, toQ: tq, toR: tr, orderScore });
             }
             break;
           } else if (!capturesOnly) {
@@ -2898,6 +3056,11 @@ export class StrategoAIEngine {
 
     let aiFlag: Unit | null = null;
     let playerFlag: Unit | null = null;
+    let aiMarshalUnit: Unit | null = null;
+    let aiGeneralUnit: Unit | null = null;
+    let aiSpyUnit: Unit | null = null;
+    let playerMarshalUnit: Unit | null = null;
+    let playerSpyUnit: Unit | null = null;
     let aiMaxRank = 0;
     let playerMaxRank = 0;
     let aiMiners = 0;
@@ -2907,7 +3070,10 @@ export class StrategoAIEngine {
     let aiMovableCount = 0;
     let playerMovableCount = 0;
 
+    const unitAtCoord = new Map<string, Unit>();
+
     for (const u of worldUnits) {
+      unitAtCoord.set(coordKey(u.q, u.r), u);
       const def = UNIT_DEFINITIONS[u.type];
       if (u.faction === 'ai') {
         if (u.type === 'flag') aiFlag = u;
@@ -2916,6 +3082,9 @@ export class StrategoAIEngine {
           aiMovableCount++;
           if (def.rank > aiMaxRank) aiMaxRank = def.rank;
           if (u.type === 'miner') aiMiners++;
+          else if (u.type === 'marshal') aiMarshalUnit = u;
+          else if (u.type === 'general') aiGeneralUnit = u;
+          else if (u.type === 'spy') aiSpyUnit = u;
         }
       } else {
         if (u.type === 'flag') playerFlag = u;
@@ -2924,6 +3093,8 @@ export class StrategoAIEngine {
           playerMovableCount++;
           if (def.rank > playerMaxRank) playerMaxRank = def.rank;
           if (u.type === 'miner') playerMiners++;
+          else if (u.type === 'marshal') playerMarshalUnit = u;
+          else if (u.type === 'spy') playerSpyUnit = u;
         }
       }
     }
@@ -2931,7 +3102,10 @@ export class StrategoAIEngine {
     if (!aiFlag || aiMovableCount === 0) return -43000;
     if (!playerFlag || playerMovableCount === 0) return 43000;
 
-    // 1. Material + Information Asymmetry + Positional Pressure
+    let maxAiHangingVal = 0;
+    let maxPlayerHangingVal = 0;
+
+    // 1. Material + Information Asymmetry + Positional Pressure + Immediate Clash Tempo
     for (const u of worldUnits) {
       if (u.type === 'flag') continue;
       const val = this.getUnitValue(u.type, u.faction, rootAnalysis);
@@ -2941,22 +3115,54 @@ export class StrategoAIEngine {
         score += val;
         // Fog-of-War Information Hiding Premium: keeping AI high-value pieces unrevealed is a major advantage!
         if (!u.revealed && (def.rank >= 7 || u.type === 'spy' || u.type === 'miner')) {
-          score += def.rank >= 9 ? 75 : 45;
+          score += def.rank >= 9 ? 90 : 52;
         }
         // Pressure toward Player Flag
         if (def.canMove && u.type !== 'spy') {
           const distToEnemyFlag = hexDistance({ q: u.q, r: u.r }, { q: playerFlag.q, r: playerFlag.r });
-          if (u.type === 'miner' || def.rank >= 6) {
+          if (u.type === 'miner') {
+            score += Math.max(0, 9 - distToEnemyFlag) * 26;
+          } else if (def.rank >= 6) {
             score += Math.max(0, 9 - distToEnemyFlag) * 18;
           } else {
             score += Math.max(0, 8 - distToEnemyFlag) * 8;
+          }
+        }
+
+        // Check adjacent enemy clashes for tempo-aware en-prise evaluation
+        if (def.canMove) {
+          for (const n of getNeighbors(u.q, u.r)) {
+            const adj = unitAtCoord.get(coordKey(n.q, n.r));
+            if (!adj || adj.faction === 'ai') continue;
+            const adjDef = UNIT_DEFINITIONS[adj.type];
+            const adjVal = this.getUnitValue(adj.type, 'player', rootAnalysis);
+
+            if (adj.type === 'flag') {
+              maxPlayerHangingVal = Math.max(maxPlayerHangingVal, 6000);
+            } else if (adj.type === 'bomb') {
+              if (u.type === 'miner') {
+                maxPlayerHangingVal = Math.max(maxPlayerHangingVal, 420);
+              }
+            } else {
+              // Both are movable units adjacent to each other
+              const aiWinsOnAiTurn = (u.type === 'spy' && adj.type === 'marshal') || def.rank > adjDef.rank;
+              const playerWinsOnPlayerTurn =
+                (adj.type === 'spy' && u.type === 'marshal') || adjDef.rank > def.rank;
+
+              if (aiWinsOnAiTurn && (adj.revealed || def.rank >= 7)) {
+                maxPlayerHangingVal = Math.max(maxPlayerHangingVal, adjVal);
+              }
+              if (playerWinsOnPlayerTurn && (u.revealed || adjDef.rank >= 7 || adj.type === 'spy')) {
+                maxAiHangingVal = Math.max(maxAiHangingVal, val);
+              }
+            }
           }
         }
       } else {
         score -= val;
         // Revealed enemy units reduce AI's uncertainty (Information Gain bonus)
         if (u.revealed && u.type !== 'bomb') {
-          score += def.rank >= 7 || u.type === 'spy' || u.type === 'miner' ? 55 : 25;
+          score += def.rank >= 7 || u.type === 'spy' || u.type === 'miner' ? 68 : 30;
         }
         // Enemy threat to AI Flag
         if (def.canMove && u.type !== 'spy') {
@@ -2964,27 +3170,68 @@ export class StrategoAIEngine {
           if (distToAiFlag === 1) {
             score -= sideToMove === 'player' ? 3200 : 950;
           } else if (distToAiFlag === 2) {
-            score -= 340;
+            score -= 360;
           } else if (distToAiFlag === 3) {
-            score -= 110;
+            score -= 120;
           }
         }
       }
     }
 
-    // 2. Apex Rank Dominance (Unstoppable Officer Advantage)
+    // Apply Tempo-Aware Hanging Piece Adjustment at leaf nodes!
+    if (sideToMove === 'player') {
+      score -= maxAiHangingVal * 0.74;
+      score += maxPlayerHangingVal * 0.20;
+    } else {
+      score += maxPlayerHangingVal * 0.74;
+      score -= maxAiHangingVal * 0.20;
+    }
+
+    // 2. Apex Rank Dominance & Marshal-General-Spy Triangle
     if (aiMaxRank > playerMaxRank) {
-      score += 320;
+      score += 340;
     } else if (playerMaxRank > aiMaxRank) {
-      score -= 320;
+      score -= 340;
+    }
+
+    if (aiSpyUnit && playerMarshalUnit) {
+      const spyToMarshalDist = hexDistance(
+        { q: aiSpyUnit.q, r: aiSpyUnit.r },
+        { q: playerMarshalUnit.q, r: playerMarshalUnit.r }
+      );
+      if (playerMarshalUnit.revealed) {
+        score += Math.max(0, 7 - spyToMarshalDist) * 32;
+      }
+      if (aiGeneralUnit) {
+        const spyToGenDist = hexDistance(
+          { q: aiSpyUnit.q, r: aiSpyUnit.r },
+          { q: aiGeneralUnit.q, r: aiGeneralUnit.r }
+        );
+        if (spyToGenDist <= 2) {
+          score += 55;
+        }
+      }
+    }
+
+    if (aiMarshalUnit && aiMarshalUnit.revealed && playerSpyUnit) {
+      const hasFriendlyScreen = worldUnits.some(
+        u =>
+          u.faction === 'ai' &&
+          u.id !== aiMarshalUnit!.id &&
+          UNIT_DEFINITIONS[u.type].canMove &&
+          hexDistance({ q: u.q, r: u.r }, { q: aiMarshalUnit!.q, r: aiMarshalUnit!.r }) <= 2
+      );
+      if (!hasFriendlyScreen) {
+        score -= 90;
+      }
     }
 
     // 3. Endgame Bomb-Lock / Miner Extinction Asymmetry
     if (playerBombs > 0 && aiMiners === 0) {
-      score -= 680;
+      score -= 720;
     }
     if (aiBombs > 0 && playerMiners === 0) {
-      score += 620;
+      score += 660;
     }
 
     return score;
@@ -3128,10 +3375,27 @@ export class StrategoAIEngine {
         if (myDef.rank > targetDef.rank) {
           score += 210 + targetVal - myDangerAfter * 0.95;
 
-          // Game-Theoretic Information Hiding: avoid revealing our Marshal/General just to kill a cheap Scout/Miner
-          // when a lower-rank friendly unit could do it or when the enemy Spy is still hidden nearby!
-          if (!aiUnit.revealed && myDef.rank >= 9 && targetDef.rank <= 3 && targetUnit.r > -1) {
-            score -= isUltra ? 210 : 155;
+          // Least Valuable Attacker (LVA) & Information Hiding:
+          // Avoid revealing our Marshal (10) or General (9) on a lower-rank enemy when another friendly officer can handle it!
+          if (!aiUnit.revealed && myDef.rank >= 9 && targetDef.rank <= 6 && targetDistToAiFlag > 2) {
+            const lowerAllyCanHandle = units.some(
+              u =>
+                u.faction === 'ai' &&
+                u.id !== aiUnit.id &&
+                UNIT_DEFINITIONS[u.type].canMove &&
+                UNIT_DEFINITIONS[u.type].rank > targetDef.rank &&
+                UNIT_DEFINITIONS[u.type].rank < myDef.rank &&
+                hexDistance({ q: u.q, r: u.r }, { q: targetUnit.q, r: targetUnit.r }) <= 2
+            );
+            if (lowerAllyCanHandle) {
+              score -= isUltra ? 265 : 185;
+            } else if (targetDef.rank <= 3 && targetUnit.r > -1) {
+              score -= isUltra ? 210 : 155;
+            }
+          }
+          // Reward exact counter-rank kills (e.g. Major 7 killing Captain 6, Colonel 8 killing Major 7)
+          if (myDef.rank === targetDef.rank + 1 || myDef.rank === targetDef.rank + 2) {
+            score += 65;
           }
 
           if (targetDistToAiFlag === 1) {
@@ -3234,7 +3498,10 @@ export class StrategoAIEngine {
 
         if (aiUnit.type === 'scout') {
           if (moveDist > 1) {
-            score += 125;
+            score += 175;
+          }
+          if (targetUnit.hasMovedEver) {
+            score += 145 + (targetUnit.r <= 1 ? 65 : 0);
           }
         } else if (aiUnit.type === 'miner') {
           if (targetUnit.hasMovedEver && analysis.unrevealedBombs > 0 && analysis.aiMinersAlive <= 2) {
@@ -3274,6 +3541,18 @@ export class StrategoAIEngine {
         score -= 240;
       }
 
+      // Opening/Midgame Concealment for Unrevealed Marshal (10) & General (9):
+      // Keep top apex officers coiled in the 2nd line (r <= -1) while Scouts & mid-officers probe unknown enemy formations!
+      if (
+        !aiUnit.revealed &&
+        myDef.rank >= 9 &&
+        analysis.totalHiddenMovable >= 10 &&
+        toR >= 0 &&
+        myDangerBefore < 80
+      ) {
+        score -= isUltra ? 135 : 90;
+      }
+
       const afterDists = this.computeDistanceMapFrom(toQ, toR, aiUnit, tiles, simulatedBoard);
 
       let bestMissionBonus = -999;
@@ -3291,20 +3570,54 @@ export class StrategoAIEngine {
         if (pu.revealed) {
           const puDef = UNIT_DEFINITIONS[pu.type];
           if (pu.type === 'flag') {
-            targetPriority = 350;
+            targetPriority = 380;
           } else if (pu.type === 'bomb') {
             if (aiUnit.type === 'miner') {
-              targetPriority = pu.r >= 3 ? 155 : 105;
+              targetPriority = pu.r >= 3 ? 210 : 135;
+              if (
+                analysis.mostLikelyFlagUnit &&
+                hexDistance(
+                  { q: pu.q, r: pu.r },
+                  { q: analysis.mostLikelyFlagUnit.q, r: analysis.mostLikelyFlagUnit.r }
+                ) === 1
+              ) {
+                targetPriority += 95;
+              }
             } else {
               targetPriority = -25;
             }
-          } else if (pu.type === 'marshal' && aiUnit.type === 'spy') {
-            targetPriority = 165;
+          } else if (pu.type === 'marshal') {
+            if (aiUnit.type === 'spy') {
+              targetPriority = 285;
+            } else if (
+              (aiUnit.type === 'general' || aiUnit.type === 'colonel') &&
+              analysis.aiSpyAlive
+            ) {
+              // Escort the Spy and pin the revealed Player Marshal!
+              targetPriority = 165;
+            } else if (
+              aiUnit.type === 'marshal' &&
+              ((analysis.aiGeneralAlive && !analysis.playerGeneralAlive) || pu.r <= -1)
+            ) {
+              targetPriority = 230;
+            } else {
+              targetPriority = -35;
+            }
           } else if (myDef.rank > puDef.rank) {
-            targetPriority = 48 + puDef.rank * 8.0;
-            if (puDef.rank >= 6) targetPriority += 36;
+            targetPriority = 65 + puDef.rank * 11.5;
+            if (puDef.rank >= 6) targetPriority += 48;
+            // Prefer sending the ideal counter-rank (+1 or +2 above target, or already revealed) to hunt revealed enemy officers!
+            if (
+              myDef.rank === puDef.rank + 1 ||
+              myDef.rank === puDef.rank + 2 ||
+              aiUnit.revealed
+            ) {
+              targetPriority += 55;
+            } else if (!aiUnit.revealed && myDef.rank >= 9 && puDef.rank <= 4) {
+              targetPriority -= 45;
+            }
           } else if (myDef.rank < puDef.rank) {
-            targetPriority = -30;
+            targetPriority = -35;
           }
         } else {
           const belief = this.getUnitBelief(pu, analysis, units);
@@ -3313,26 +3626,26 @@ export class StrategoAIEngine {
           if (aiUnit.type === 'miner') {
             if (isUnmovedBackrow) {
               const totalPlayerLeft = playerUnits.length;
-              targetPriority = (totalPlayerLeft <= 17 ? 105 : 48) + belief.pBomb * 65 + belief.pFlag * 95;
+              targetPriority = (totalPlayerLeft <= 17 ? 145 : 75) + belief.pBomb * 85 + belief.pFlag * 130;
             } else if (!pu.hasMovedEver && pu.r === 2) {
-              targetPriority = 55 + belief.pBomb * 40;
+              targetPriority = 75 + belief.pBomb * 55;
             } else {
               targetPriority = 8;
             }
           } else if (aiUnit.type === 'spy') {
-            targetPriority = belief.pByType.marshal > 0.35 ? belief.pByType.marshal * 140 : -10;
+            targetPriority = belief.pByType.marshal > 0.30 ? belief.pByType.marshal * 185 : -10;
           } else if (aiUnit.type === 'scout') {
-            targetPriority = (isUnmovedBackrow ? 32 : 62) + (isUltra ? belief.entropy * 6 : 0);
+            targetPriority = (isUnmovedBackrow ? 35 : 82) + (isUltra ? belief.entropy * 9 : 0);
           } else if (aiUnit.type === 'sergeant' || aiUnit.type === 'lieutenant') {
-            targetPriority = isUnmovedBackrow ? (analysis.aiMinersAlive > 0 ? 20 : 45) : 58;
+            targetPriority = isUnmovedBackrow ? (analysis.aiMinersAlive > 0 ? 24 : 52) : 72;
           } else if (myDef.rank >= 6) {
             if (pu.hasMovedEver) {
-              targetPriority = 56;
+              targetPriority = 64;
               if (myDef.rank >= analysis.highestUnrevealedPlayerRank) {
-                targetPriority += 40;
+                targetPriority += 45;
               }
             } else {
-              targetPriority = analysis.unrevealedBombs === 0 ? 105 : 14 + belief.pFlag * 120;
+              targetPriority = analysis.unrevealedBombs === 0 ? 135 : 18 + belief.pFlag * 150;
             }
           }
         }

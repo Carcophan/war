@@ -93,11 +93,66 @@ export class HexStrategoGame {
   }
 
   public syncAI(): void {
+    let effectiveUnits = this.units;
+    let effectivePhase: string = this.phase;
+    let effectiveTurn = this.turn;
+
+    if (this.phase === 'combat_anim' && this.activeCombat) {
+      // Combat resolution already updated `this.units`! Start searching the next side's turn immediately during the 1.8s animation.
+      if (this.activeCombat.attacker.faction === 'player') {
+        effectivePhase = 'ai_turn';
+      } else {
+        effectivePhase = 'player_turn';
+        effectiveTurn = this.turn + 1;
+      }
+    } else if (this.phase === 'animating_move' && this.activeMoveAnim && !this.activeMoveAnim.swapUnit) {
+      const anim = this.activeMoveAnim;
+      if (anim.fromQ !== anim.toQ || anim.fromR !== anim.toR) {
+        const defender = this.units.find(
+          u => u.q === anim.toQ && u.r === anim.toR && u.id !== anim.unit.id
+        );
+        if (!defender) {
+          effectiveUnits = this.units.map(u => {
+            if (u.id !== anim.unit.id) return u;
+            let nextType = u.type;
+            let nextXp = u.xp ?? 0;
+            if (this.gameMode === 'scouts_only') {
+              const idx = PROMOTION_CHAIN.indexOf(nextType);
+              if (idx !== -1 && idx < PROMOTION_CHAIN.length - 1) {
+                const tile = this.tiles.get(coordKey(anim.toQ, anim.toR));
+                const isForward = u.faction === 'player' ? anim.toR < anim.fromR : anim.toR > anim.fromR;
+                if (isForward || tile?.terrain === 'forest') {
+                  nextXp++;
+                  if (nextXp >= 2) {
+                    nextType = PROMOTION_CHAIN[idx + 1];
+                    nextXp = 0;
+                  }
+                }
+              }
+            }
+            return {
+              ...u,
+              type: nextType,
+              q: anim.toQ,
+              r: anim.toR,
+               xp: nextXp
+            };
+          });
+          if (anim.unit.faction === 'player') {
+            effectivePhase = 'ai_turn';
+          } else {
+            effectivePhase = 'player_turn';
+            effectiveTurn = this.turn + 1;
+          }
+        }
+      }
+    }
+
     this.aiPool.syncState(
-      this.units,
+      effectiveUnits,
       this.tiles,
-      this.phase,
-      this.turn,
+      effectivePhase,
+      effectiveTurn,
       this.aiDifficulty,
       this.gameMode
     );

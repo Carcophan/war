@@ -53,6 +53,7 @@ interface PoolSession {
   pendingTasks: PendingTask[];
   inFlightTasks: number;
   candAccumulators: DepthCandidateAccumulator[];
+  initialStaticScore: number;
   committedBestMove: { unitId: string; toQ: number; toR: number; score: number; baseScore: number } | null;
   committedBestScore: number;
   predictedPlayerMoveText: string;
@@ -212,6 +213,7 @@ export class AIMultiCorePool {
       pendingTasks: [],
       inFlightTasks: 0,
       candAccumulators: [],
+      initialStaticScore: 0,
       committedBestMove: null,
       committedBestScore: 0,
       predictedPlayerMoveText: 'Analysiere Frontlinie...',
@@ -266,16 +268,38 @@ export class AIMultiCorePool {
     activeSession.phase = 'thinking_ai';
     this.scheduleTasks();
 
-    const timeBudget = difficulty === 'ultra' ? 300 : difficulty === 'hard' ? 160 : 75;
+    const timeBudget = difficulty === 'ultra' ? 620 : difficulty === 'hard' ? 280 : 110;
+    const minTargetCompletedDepth = difficulty === 'ultra' ? 6 : difficulty === 'hard' ? 5 : 1;
+    const callStart = performance.now();
 
     await new Promise<void>(resolve => {
       let settled = false;
+      let graceUsed = false;
+      let timer: ReturnType<typeof setTimeout>;
+
       const finish = () => {
         if (settled) return;
         settled = true;
         this.turnResolveCheck = null;
         clearTimeout(timer);
         resolve();
+      };
+
+      const onTimeout = () => {
+        if (settled) return;
+        // If the first full multi-world tree iteration (Depth 2 + Quiescence = 6 plies) is still in flight,
+        // grant a single grace window so the AI never plays an unsearched 1-ply move!
+        if (
+          !graceUsed &&
+          this.session &&
+          this.session.sessionId === activeSession.sessionId &&
+          this.session.completedDepth < minTargetCompletedDepth
+        ) {
+          graceUsed = true;
+          timer = setTimeout(finish, difficulty === 'ultra' ? 420 : 220);
+          return;
+        }
+        finish();
       };
 
       const checkEarlyExit = () => {
@@ -295,6 +319,19 @@ export class AIMultiCorePool {
           finish();
           return;
         }
+        // If we extended into grace time and just finished the required depth, exit immediately
+        if (graceUsed && this.session.completedDepth >= minTargetCompletedDepth) {
+          finish();
+          return;
+        }
+        // If animation handoff already allowed workers to reach deep horizon (Depth 8+ plies), resolve snappily
+        if (
+          this.session.completedDepth >= 8 &&
+          performance.now() - callStart >= 180
+        ) {
+          finish();
+          return;
+        }
         // Reached max iterative deepening horizon
         if (
           this.session.sessionInitialized &&
@@ -305,7 +342,7 @@ export class AIMultiCorePool {
       };
 
       this.turnResolveCheck = checkEarlyExit;
-      const timer = setTimeout(finish, timeBudget);
+      timer = setTimeout(onTimeout, timeBudget);
       checkEarlyExit();
     });
 
@@ -366,6 +403,7 @@ export class AIMultiCorePool {
         this.session.rootMoves = msg.rootMoves;
         this.session.worldWeights = msg.worldWeights;
         this.session.worldsCount = msg.worldsCount;
+        this.session.initialStaticScore = msg.initialStaticScore;
         this.session.committedBestScore = msg.initialStaticScore;
 
         if (msg.rootMoves.length > 0) {
@@ -497,6 +535,7 @@ export class AIMultiCorePool {
   private commitCompletedDepth(s: PoolSession): void {
     let bestIdx = 0;
     let bestScore = s.sideToMove === 'ai' ? -Infinity : Infinity;
+    let bestRawEval = s.initialStaticScore;
 
     for (let i = 0; i < s.rootMoves.length; i++) {
       const cand = s.rootMoves[i];
@@ -504,16 +543,23 @@ export class AIMultiCorePool {
       if (!acc || acc.completedWorlds === 0) continue;
 
       if (s.sideToMove === 'ai') {
-        const regretAdjusted = 0.72 * acc.expectedScore + 0.28 * acc.worstScore;
-        const combined = cand.baseScore * 0.48 + regretAdjusted * 0.52;
+        // Normalize tree scores relative to the root board static score so deltas match `cand.baseScore` scale!
+        const expectedDelta = acc.expectedScore - s.initialStaticScore;
+        const worstDelta = acc.worstScore - s.initialStaticScore;
+        const regretAdjustedDelta = 0.68 * expectedDelta + 0.32 * worstDelta;
+        // If the deep search tree uncovers a nasty trap or material loss, trust the tree heavily over 1-ply heuristics!
+        const treeWeight = worstDelta < -220 || regretAdjustedDelta < -140 ? 0.80 : 0.64;
+        const combined = cand.baseScore * (1 - treeWeight) + regretAdjustedDelta * treeWeight;
         if (combined > bestScore) {
           bestScore = combined;
+          bestRawEval = s.initialStaticScore + regretAdjustedDelta;
           bestIdx = i;
         }
       } else {
-        const playerScore = 0.75 * acc.expectedScore + 0.25 * acc.worstScore;
+        const playerScore = 0.72 * acc.expectedScore + 0.28 * acc.worstScore;
         if (playerScore < bestScore) {
           bestScore = playerScore;
+          bestRawEval = playerScore;
           bestIdx = i;
         }
       }
@@ -523,7 +569,7 @@ export class AIMultiCorePool {
     const bestAcc = s.candAccumulators[bestIdx];
     if (bestCand) {
       s.completedDepth = s.currentDepth + 1 + s.quiescenceDepth;
-      s.committedBestScore = bestScore;
+      s.committedBestScore = bestRawEval;
       s.committedBestMove = {
         unitId: bestCand.unitId,
         toQ: bestCand.toQ,
@@ -584,6 +630,7 @@ export class AIMultiCorePool {
   private tryCommitPartialDepth(s: PoolSession): void {
     let bestIdx = -1;
     let bestScore = s.sideToMove === 'ai' ? -Infinity : Infinity;
+    let bestRawEval = s.initialStaticScore;
 
     for (let i = 0; i < s.rootMoves.length; i++) {
       const cand = s.rootMoves[i];
@@ -591,10 +638,14 @@ export class AIMultiCorePool {
       if (!acc || acc.completedWorlds < s.worldsCount) continue;
 
       if (s.sideToMove === 'ai') {
-        const regretAdjusted = 0.72 * acc.expectedScore + 0.28 * acc.worstScore;
-        const combined = cand.baseScore * 0.48 + regretAdjusted * 0.52;
+        const expectedDelta = acc.expectedScore - s.initialStaticScore;
+        const worstDelta = acc.worstScore - s.initialStaticScore;
+        const regretAdjustedDelta = 0.68 * expectedDelta + 0.32 * worstDelta;
+        const treeWeight = worstDelta < -220 || regretAdjustedDelta < -140 ? 0.80 : 0.64;
+        const combined = cand.baseScore * (1 - treeWeight) + regretAdjustedDelta * treeWeight;
         if (combined > bestScore) {
           bestScore = combined;
+          bestRawEval = s.initialStaticScore + regretAdjustedDelta;
           bestIdx = i;
         }
       }
@@ -602,7 +653,7 @@ export class AIMultiCorePool {
 
     if (bestIdx >= 0) {
       const bestCand = s.rootMoves[bestIdx];
-      s.committedBestScore = bestScore;
+      s.committedBestScore = bestRawEval;
       s.committedBestMove = {
         unitId: bestCand.unitId,
         toQ: bestCand.toQ,
