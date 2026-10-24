@@ -250,6 +250,7 @@ btnAiDiff.addEventListener('click', () => {
   } else {
     game.aiDifficulty = 'ultra';
   }
+  game.syncAI();
   updateUI();
 });
 
@@ -372,12 +373,13 @@ function updateScoreAndTelemetryUI(): void {
     aiBadgePill.className = 'ai-mode-pill normal';
   }
 
+  const workerCount = stats?.workerCount ?? game.getAIWorkerCount();
   const phaseStatusText =
     game.phase === 'ai_turn'
-      ? '🔥 KI am Zug: Tiefensuche läuft...'
+      ? `🔥 KI am Zug: Multi-Core Tiefensuche (${workerCount} Kerne parallel)...`
       : game.phase === 'setup'
-      ? '🟢 Permanent-Brain: Analysiert Aufstellung im Voraus'
-      : '🟢 Permanent-Brain: Denkt während deines Zuges voraus!';
+      ? `🟢 Multi-Core Brain (${workerCount} Worker): Analysiert Aufstellung`
+      : `🟢 Multi-Core Brain (${workerCount} Worker): Rechnet im Hintergrund!`;
 
   aiTelemetryEl.innerHTML = `
     <div class="ponder-live-banner ${isPondering ? 'active' : ''}">
@@ -385,10 +387,10 @@ function updateScoreAndTelemetryUI(): void {
       <span>${phaseStatusText}</span>
     </div>
     <div class="ai-tech-tags">
+      <span class="tech-tag">⚡ ${workerCount} CPU-Worker parallel</span>
       <span class="tech-tag">Iterative Deepening (bis 19-Ply)</span>
       <span class="tech-tag">Zobrist Transposition Table</span>
-      <span class="tech-tag">PVS + LMR + Quiescence</span>
-      <span class="tech-tag">4 Bayes-Welten</span>
+      <span class="tech-tag">4 Bayes-Welten + Work-Stealing</span>
     </div>
     <div class="ai-metrics-grid">
       <div class="ai-metric-item">

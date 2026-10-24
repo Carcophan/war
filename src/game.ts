@@ -18,6 +18,7 @@ import {
 } from './types';
 import { sound } from './audio';
 import { AISearchStats, StrategoAIEngine } from './ai';
+import { AIMultiCorePool } from './ai-pool';
 
 export interface GameScoreSummary {
   playerTotalScore: number;
@@ -66,19 +67,40 @@ export class HexStrategoGame {
   public debugRevealAI = false;
 
   private aiEngine = new StrategoAIEngine();
+  private aiPool: AIMultiCorePool;
+  private gameId = 1;
   private onChangeCallback: () => void;
   private onTelemetryCallback: (() => void) | null = null;
-  private lastTelemetryNotifyTime = 0;
 
   constructor(onChange: () => void, onTelemetry?: () => void) {
     this.onChangeCallback = onChange;
     this.onTelemetryCallback = onTelemetry || null;
+    this.aiPool = new AIMultiCorePool(this.aiEngine, () => {
+      if (this.onTelemetryCallback) {
+        this.onTelemetryCallback();
+      }
+    });
     this.loadMatchScore();
-    this.startPermanentPonderDaemon();
   }
 
   public setTelemetryCallback(cb: () => void): void {
     this.onTelemetryCallback = cb;
+    this.aiPool.setTelemetryCallback(cb);
+  }
+
+  public getAIWorkerCount(): number {
+    return this.aiPool.workerCount;
+  }
+
+  public syncAI(): void {
+    this.aiPool.syncState(
+      this.units,
+      this.tiles,
+      this.phase,
+      this.turn,
+      this.aiDifficulty,
+      this.gameMode
+    );
   }
 
   private loadMatchScore(): void {
@@ -105,39 +127,8 @@ export class HexStrategoGame {
     }
   }
 
-  /**
-   * Starts the Permanent-Brain Background Loop:
-   * The AI thinks continuously in small ~10ms slices even during 'setup', 'player_turn',
-   * 'animating_move', and 'combat_anim', building its Zobrist Transposition Table and
-   * Ponder Counter-Move Book up to 15+3 = 18+ plies deep!
-   */
-  private startPermanentPonderDaemon(): void {
-    const tick = () => {
-      if (this.phase !== 'game_over' && this.units.length > 0) {
-        const depthIncreased = this.aiEngine.stepPonderSlice(
-          this.units,
-          this.tiles,
-          this.phase,
-          this.turn,
-          this.aiDifficulty,
-          u => this.getValidMoves(u),
-          this.gameMode,
-          10
-        );
-        const now = performance.now();
-        if (depthIncreased || now - this.lastTelemetryNotifyTime > 240) {
-          this.lastTelemetryNotifyTime = now;
-          if (this.onTelemetryCallback) {
-            this.onTelemetryCallback();
-          }
-        }
-      }
-      setTimeout(tick, 22);
-    };
-    setTimeout(tick, 50);
-  }
-
   public initNewGame(playAudio = false): void {
+    this.gameId++;
     this.tiles.clear();
     this.units = [];
     this.phase = 'setup';
@@ -154,7 +145,7 @@ export class HexStrategoGame {
     this.lastMove = null;
     this.activeCombat = null;
     this.activeMoveAnim = null;
-    this.aiEngine.reset();
+    this.aiPool.reset();
 
     this.generateBoard();
     this.autoDeployPlayer(playAudio);
@@ -812,9 +803,11 @@ export class HexStrategoGame {
     if (nextFaction === 'ai') {
       this.phase = 'ai_turn';
       this.notify();
+      const expectedGameId = this.gameId;
+      const expectedTurn = this.turn;
       setTimeout(() => {
-        this.performAITurn();
-      }, 550);
+        void this.performAITurn(expectedGameId, expectedTurn);
+      }, 280);
     } else {
       this.turn++;
       this.phase = 'player_turn';
@@ -915,7 +908,7 @@ export class HexStrategoGame {
     let playerWinProb = stats ? stats.playerWinProb : 50;
 
     if (!stats && this.units.length > 0) {
-      const m = this.aiEngine.computeEvalMetrics(aiTotalScore - playerTotalScore, this.units);
+      const m = this.aiEngine.computeEvalMetrics(aiTotalScore - playerTotalScore);
       evalForPlayer = m.evalForPlayer;
       playerWinProb = m.playerWinProb;
     }
@@ -944,12 +937,14 @@ export class HexStrategoGame {
   }
 
   // ============================================================================
-  // AI ENGINE (Grandmaster Deduction, BFS Pathfinding & 2-Ply Threat Search)
+  // AI ENGINE (Multi-Core Web Worker Pool: Non-Blocking Deep Search)
   // ============================================================================
-  private performAITurn(): void {
-    if (this.phase !== 'ai_turn') return;
+  private async performAITurn(expectedGameId: number, expectedTurn: number): Promise<void> {
+    if (this.phase !== 'ai_turn' || this.gameId !== expectedGameId || this.turn !== expectedTurn) {
+      return;
+    }
 
-    const chosen = this.aiEngine.selectBestMove(
+    const chosen = await this.aiPool.selectBestMoveAsync(
       this.units,
       this.tiles,
       this.turn,
@@ -957,6 +952,10 @@ export class HexStrategoGame {
       u => this.getValidMoves(u),
       this.gameMode
     );
+
+    if (this.phase !== 'ai_turn' || this.gameId !== expectedGameId || this.turn !== expectedTurn) {
+      return;
+    }
 
     if (!chosen) {
       this.declareWinner('player', 'Die KI hat keine gültigen Züge mehr!');
@@ -997,6 +996,7 @@ export class HexStrategoGame {
   }
 
   private notify(): void {
+    this.syncAI();
     this.onChangeCallback();
   }
 }
