@@ -1,8 +1,8 @@
-# ⬢ HEX-STRATEGO (3D WebGL)
+# ⬢ HEX-FRONTLINE (3D WebGL)
 
 > **Taktisches Hexagon-Kriegsspiel mit Bundeswehr-Rangsystem, Three.js 3D-Grafik und Multi-Core Game-Theory KI.**
 
-Hex-Stratego kombiniert die taktische Tiefe und die verborgenen Informationen des Brettspielklassikers **Stratego** mit einem flexiblen **Hexagonal-Spielfeld (Pointy-Top)**, moderner **3D-WebGL-Visualisierung (Three.js)** und einer leistungsstarken **Multi-Core KI** mit Wahrscheinlichkeitsinferenz und Alpha-Beta-Suche.
+Hex-Frontline kombiniert die taktische Tiefe und die verborgenen Informationen klassischer Rundenstrategie-Brettspiele (wie Stratego und L'Attaque) mit einem flexiblen **Hexagonal-Spielfeld (Pointy-Top)**, moderner **3D-WebGL-Visualisierung (Three.js)** und einer leistungsstarken **Multi-Core KI** mit Wahrscheinlichkeitsinferenz und Alpha-Beta-Suche.
 
 ---
 
@@ -133,6 +133,8 @@ war/
 
 ---
 
-## 📜 Lizenz
+## 📜 Lizenz & Rechtlicher Hinweis
 
-Dieses Projekt steht unter privater/freier Nutzung für Bildungs- und Spielzwecke.
+Dieses Projekt steht unter privater/freier Nutzung für Bildungs- und Spielzwecke (MIT License / freie Open-Source-Nutzung).
+
+> **Markenrechtlicher Hinweis:** *Stratego* ist eine eingetragene Marke der *Koninklijke Jumbo B.V.* Hex-Frontline ist ein eigenständiges Open-Source-Spiel und steht in keiner geschäftlichen Verbindung, Befürwortung oder Partnerschaft mit der Koninklijke Jumbo B.V. oder verbundenen Unternehmen.

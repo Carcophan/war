@@ -162,7 +162,7 @@ const CENTRAL_CHOKEPOINTS: AxialCoord[] = [
   { q: 1, r: 1 }
 ];
 
-export class StrategoAIEngine {
+export class FrontlineAIEngine {
   private suspicions: Map<string, UnitSuspicion> = new Map();
   private moveHistory: AIMoveRecord[] = [];
   public lastSearchStats: AISearchStats | null = null;

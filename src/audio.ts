@@ -1,4 +1,4 @@
-// Procedural Web Audio API Sound Effects for Hex-Stratego
+// Procedural Web Audio API Sound Effects for Hex-Frontline
 
 class SoundEffects {
   private ctx: AudioContext | null = null;

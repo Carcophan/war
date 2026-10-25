@@ -1,7 +1,7 @@
 import {
   AIMoveRecord,
+  FrontlineAIEngine,
   PonderReplyEntry,
-  StrategoAIEngine,
   UnitSuspicion,
   WorkerRootCandidate
 } from './ai';
@@ -63,7 +63,7 @@ export type WorkerOutMessage =
       aiPvLine?: string;
     };
 
-const engine = new StrategoAIEngine();
+const engine = new FrontlineAIEngine();
 let activeSessionId = 0;
 
 self.onmessage = (event: MessageEvent<WorkerInMessage>) => {

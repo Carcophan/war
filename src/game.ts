@@ -17,7 +17,7 @@ import {
   UnitType
 } from './types';
 import { sound } from './audio';
-import { AISearchStats, StrategoAIEngine } from './ai';
+import { AISearchStats, FrontlineAIEngine } from './ai';
 import { AIMultiCorePool } from './ai-pool';
 
 export interface GameScoreSummary {
@@ -37,9 +37,10 @@ export interface GameScoreSummary {
   matchWinsAI: number;
 }
 
-const MATCH_SCORE_STORAGE_KEY = 'hex_stratego_match_score_v1';
+const MATCH_SCORE_STORAGE_KEY = 'hex_frontline_match_score_v1';
+const LEGACY_STORAGE_KEY = 'hex_stratego_match_score_v1';
 
-export class HexStrategoGame {
+export class HexFrontlineGame {
   public readonly radius = 4;
   public tiles: Map<string, HexTile> = new Map();
   public units: Unit[] = [];
@@ -66,7 +67,7 @@ export class HexStrategoGame {
   public aiDifficulty: AIDifficulty = 'ultra';
   public debugRevealAI = false;
 
-  private aiEngine = new StrategoAIEngine();
+  private aiEngine = new FrontlineAIEngine();
   private aiPool: AIMultiCorePool;
   private gameId = 1;
   private onChangeCallback: () => void;
@@ -160,7 +161,7 @@ export class HexStrategoGame {
 
   private loadMatchScore(): void {
     try {
-      const raw = localStorage.getItem(MATCH_SCORE_STORAGE_KEY);
+      const raw = localStorage.getItem(MATCH_SCORE_STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
         this.matchWinsPlayer = Number(parsed.player) || 0;

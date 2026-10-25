@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { AxialCoord, axialToPixel, coordKey, pixelToAxial } from './hex';
-import { HexStrategoGame } from './game';
+import { HexFrontlineGame } from './game';
 import { HexTile, ORDERED_UNIT_TYPES, Unit, UNIT_DEFINITIONS, UnitType } from './types';
 import { getInsigniaImage } from './insignia';
 
@@ -43,7 +43,7 @@ interface Particle3D {
 
 export class HexRenderer {
   private canvas: HTMLCanvasElement;
-  private game: HexStrategoGame;
+  private game: HexFrontlineGame;
 
   // Three.js Core
   private webglRenderer: THREE.WebGLRenderer;
@@ -105,7 +105,7 @@ export class HexRenderer {
   // Animation loop
   private clock = new THREE.Clock();
 
-  constructor(canvas: HTMLCanvasElement, game: HexStrategoGame) {
+  constructor(canvas: HTMLCanvasElement, game: HexFrontlineGame) {
     this.canvas = canvas;
     this.game = game;
 
@@ -793,7 +793,7 @@ export class HexRenderer {
     pedRing.position.y = 0.145;
     group.add(pedRing);
 
-    // 3. Sculpted 3D Stratego Command Monolith / Shield Stand
+    // 3. Sculpted 3D Frontline Command Monolith / Shield Stand
     // Angled display body so insignia is readable from both 3D perspective AND top-down!
     const standGroup = new THREE.Group();
     standGroup.position.y = 0.21;
@@ -1108,7 +1108,7 @@ export class HexRenderer {
         ctx.fillText('👁', 218, 39);
       }
     } else {
-      // Hidden Enemy Stratego Shield ("?")
+      // Hidden Enemy Frontline Shield ("?")
       ctx.strokeStyle = 'rgba(252, 165, 165, 0.35)';
       ctx.lineWidth = 4;
       ctx.strokeRect(24, 24, 208, 240);

@@ -1,5 +1,5 @@
 import './style.css';
-import { HexStrategoGame } from './game';
+import { HexFrontlineGame } from './game';
 import { HexRenderer } from './renderer';
 import { GameMode, ORDERED_UNIT_TYPES, PROMOTION_CHAIN, UNIT_DEFINITIONS, UnitType } from './types';
 import { sound } from './audio';
@@ -11,7 +11,7 @@ app.innerHTML = `
   <header class="top-bar">
     <div class="brand">
       <span class="brand-logo">⬢</span>
-      <h1>Hex-Stratego <span class="badge-3d">3D WebGL</span></h1>
+      <h1>Hex-Frontline <span class="badge-3d">3D WebGL</span></h1>
     </div>
 
     <div id="status-banner" class="status-banner setup-phase" style="cursor: pointer;" title="Klicke hier oder links auf 'Schlacht starten!'">
@@ -127,7 +127,7 @@ app.innerHTML = `
       </div>
 
       <div class="panel-section">
-        <div id="rules-title" class="panel-title">📜 Stratego-Hex Regeln (Bundeswehr)</div>
+        <div id="rules-title" class="panel-title">📜 Frontline-Hex Regeln (Bundeswehr)</div>
         <ul id="rules-list" class="rules-list">
           <li><strong>Ziel:</strong> Erobere die feindliche <strong>Kommandoflagge</strong> oder vernichte alle beweglichen Einheiten der KI.</li>
           <li><strong>Verdeckte Ränge:</strong> Feindliche 3D-Monolithen sind verdeckt (<strong>?</strong>), bis es zum Kampf kommt!</li>
@@ -160,7 +160,7 @@ const canvas = document.getElementById('hex-canvas') as HTMLCanvasElement;
 let renderer: HexRenderer | null = null;
 let inspectedType: UnitType = 'marshal';
 
-const game = new HexStrategoGame(
+const game = new HexFrontlineGame(
   () => {
     updateUI();
     if (renderer) {
@@ -449,7 +449,7 @@ function updateUI(): void {
       <li><strong>Bomben knacken:</strong> Sobald ein Aufklärer auf <strong>Rang 3 (Pionier)</strong> aufsteigt, kann er feindliche Bomben entschärfen (und steigt dadurch direkt weiter auf Rang 4)!</li>
     `;
   } else {
-    rulesTitle.textContent = '📜 Stratego-Hex Regeln (Bundeswehr)';
+    rulesTitle.textContent = '📜 Frontline-Hex Regeln (Bundeswehr)';
     rulesList.innerHTML = `
       <li><strong>Ziel:</strong> Erobere die feindliche <strong>Kommandoflagge</strong> oder vernichte alle beweglichen Einheiten der KI.</li>
       <li><strong>Verdeckte Ränge:</strong> Feindliche 3D-Monolithen sind verdeckt (<strong>?</strong>), bis es zum Kampf kommt!</li>

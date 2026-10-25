@@ -1,7 +1,7 @@
 import {
   AISearchStats,
+  FrontlineAIEngine,
   PonderReplyEntry,
-  StrategoAIEngine,
   WorkerRootCandidate
 } from './ai';
 import type { WorkerInMessage, WorkerOutMessage } from './ai.worker';
@@ -65,7 +65,7 @@ interface PoolSession {
 export class AIMultiCorePool {
   public readonly workerCount: number;
   private workers: WorkerSlot[] = [];
-  private aiEngine: StrategoAIEngine;
+  private aiEngine: FrontlineAIEngine;
   private onTelemetry: (() => void) | null;
   private lastTelemetryTime = 0;
 
@@ -76,7 +76,7 @@ export class AIMultiCorePool {
   private ponderTimer: ReturnType<typeof setTimeout> | null = null;
   private turnResolveCheck: (() => void) | null = null;
 
-  constructor(aiEngine: StrategoAIEngine, onTelemetry?: () => void) {
+  constructor(aiEngine: FrontlineAIEngine, onTelemetry?: () => void) {
     this.aiEngine = aiEngine;
     this.onTelemetry = onTelemetry || null;
 
